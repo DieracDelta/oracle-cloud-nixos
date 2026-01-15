@@ -1,0 +1,19 @@
+# Nix
+result
+result-*
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+terraform/*.tfplan
+
+# Environment (contains secrets)
+.env
+
+# OCI API keys (if stored locally)
+*.pem
+
+# direnv
+.direnv/
