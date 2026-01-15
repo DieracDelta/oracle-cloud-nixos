@@ -1,3 +1,13 @@
+output "instance_arch" {
+  description = "Instance architecture (arm or x86)"
+  value       = var.instance_arch
+}
+
+output "instance_shape" {
+  description = "OCI instance shape"
+  value       = local.shape_name
+}
+
 output "instance_public_ip" {
   description = "Public IP address of the NixOS instance"
   value       = oci_core_instance.nixos.public_ip

@@ -1,16 +1,21 @@
-# NixOS instance on OCI ARM (Free Tier)
+# NixOS instance on OCI (Free Tier)
 resource "oci_core_instance" "nixos" {
-  # Ensure ARM shape compatibility is set before launching (only if we created a new image)
-  depends_on = [oci_core_shape_management.nixos_arm]
+  # Ensure shape compatibility is set before launching (only if we created a new image)
+  depends_on = [oci_core_shape_management.nixos]
 
   compartment_id      = local.compartment_id
   availability_domain = local.availability_domain
   display_name        = var.instance_name
-  shape               = "VM.Standard.A1.Flex"
+  shape               = local.shape_name
 
-  shape_config {
-    ocpus         = var.instance_ocpus
-    memory_in_gbs = var.instance_memory_gb
+  # Only ARM (VM.Standard.A1.Flex) supports flexible shape config
+  # x86 micro (VM.Standard.E2.1.Micro) has fixed 1 OCPU, 1 GB RAM
+  dynamic "shape_config" {
+    for_each = local.is_flexible ? [1] : []
+    content {
+      ocpus         = var.instance_ocpus
+      memory_in_gbs = var.instance_memory_gb
+    }
   }
 
   source_details {

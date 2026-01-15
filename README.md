@@ -1,12 +1,22 @@
 # NixOS on Oracle Cloud Infrastructure
 
-Deploy NixOS to Oracle Cloud's **Always Free** ARM tier with a single `terraform apply`.
+Deploy NixOS to Oracle Cloud's **Always Free** tier with a single `terraform apply`.
 
 ## What You Get
+
+By default, you get an **ARM instance** (recommended):
 
 - **4 OCPUs** (ARM Ampere A1)
 - **24 GB RAM**
 - **100 GB boot volume** (configurable up to 200 GB free)
+
+Alternatively, you can deploy an **x86 micro instance** (very limited):
+
+- **1 OCPU** (AMD)
+- **1 GB RAM**
+- Up to 2 instances allowed
+
+Both include:
 - Vanilla NixOS with SSH access
 - Automatic iSCSI boot support for OCI NATIVE mode
 
@@ -104,11 +114,26 @@ Set these in your `.env` file or pass to terraform:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `TF_VAR_instance_arch` | `arm` | Architecture: `arm` (4 OCPU, 24GB) or `x86` (1 OCPU, 1GB micro) |
 | `TF_VAR_instance_name` | `nixos-oci` | Instance display name |
-| `TF_VAR_instance_ocpus` | `4` | Number of OCPUs (max 4 free) |
-| `TF_VAR_instance_memory_gb` | `24` | Memory in GB (max 24 free) |
+| `TF_VAR_instance_ocpus` | `4` | Number of OCPUs (ARM only, ignored for x86) |
+| `TF_VAR_instance_memory_gb` | `24` | Memory in GB (ARM only, ignored for x86) |
 | `TF_VAR_boot_volume_gb` | `100` | Boot volume size (max 200 free) |
 | `TF_VAR_delete_image_after_instance` | `false` | Delete staging bucket after image import |
+
+### Using x86 instead of ARM
+
+To deploy an x86 micro instance instead of ARM:
+
+```bash
+# In .env:
+TF_VAR_instance_arch="x86"
+
+# Or via command line:
+TF_VAR_instance_arch=x86 terraform apply
+```
+
+Note: x86 micro instances are very limited (1 OCPU, 1GB RAM). ARM is recommended for most workloads.
 
 ## Verification & Troubleshooting
 

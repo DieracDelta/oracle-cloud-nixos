@@ -47,18 +47,40 @@ variable "instance_name" {
   default     = "nixos-oci"
 }
 
-# Oracle Cloud Free Tier ARM (Ampere A1):
-# - Up to 4 OCPUs and 24 GB RAM total
-# - Can be one VM or split across multiple
+# Oracle Cloud Free Tier offers two instance types:
+#
+# ARM (Ampere A1) - "arm" (default):
+#   - Shape: VM.Standard.A1.Flex
+#   - Up to 4 OCPUs and 24 GB RAM total (configurable)
+#   - More powerful, recommended for most workloads
+#
+# x86 (AMD) - "x86":
+#   - Shape: VM.Standard.E2.1.Micro
+#   - Fixed: 1 OCPU and 1 GB RAM (2 instances allowed)
+#   - Very limited, suitable only for lightweight tasks
+#
+variable "instance_arch" {
+  type        = string
+  description = "Instance architecture: 'arm' (4 OCPU, 24GB) or 'x86' (1 OCPU, 1GB micro)"
+  default     = "arm"
+
+  validation {
+    condition     = contains(["arm", "x86"], var.instance_arch)
+    error_message = "instance_arch must be 'arm' or 'x86'"
+  }
+}
+
+# These only apply to ARM instances (VM.Standard.A1.Flex)
+# x86 micro instances have fixed 1 OCPU and 1 GB RAM
 variable "instance_ocpus" {
   type        = number
-  description = "Number of OCPUs for the instance"
+  description = "Number of OCPUs for ARM instance (ignored for x86)"
   default     = 4
 }
 
 variable "instance_memory_gb" {
   type        = number
-  description = "Memory in GB for the instance"
+  description = "Memory in GB for ARM instance (ignored for x86)"
   default     = 24
 }
 

@@ -19,10 +19,14 @@ jobs:
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - name: Check formatting (nix fmt)
+        run: |
+          echo "Verifying all files are formatted with 'nix fmt'..."
+          echo "If this fails, run 'nix fmt' locally and commit the changes."
+          nix build .#checks.x86_64-linux.treefmt
+
       - name: Run nix flake check
         run: nix flake check --all-systems
 
-      - name: Check flake outputs
-        run: |
-          echo "Checking flake outputs..."
-          nix flake show
+      - name: Show flake outputs
+        run: nix flake show

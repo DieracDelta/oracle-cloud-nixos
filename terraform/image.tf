@@ -6,10 +6,19 @@
 #
 # We tag OCI images with the nix store hash so we can skip upload if
 # an image for this exact derivation already exists in OCI.
+
+locals {
+  # Map instance_arch to nix system and OCI shape
+  nix_system  = var.instance_arch == "arm" ? "aarch64-linux" : "x86_64-linux"
+  shape_name  = var.instance_arch == "arm" ? "VM.Standard.A1.Flex" : "VM.Standard.E2.1.Micro"
+  is_flexible = var.instance_arch == "arm" # Only ARM shape is flexible (configurable OCPU/RAM)
+}
+
 data "external" "image_path" {
   program = ["bash", "-c", <<-EOF
+    SYSTEM="${local.nix_system}"
     # Get the derivation's output path without building
-    DRV_PATH=$(nix eval .#packages.aarch64-linux.oci-base-image.outPath --raw)
+    DRV_PATH=$(nix eval .#packages.$SYSTEM.oci-base-image.outPath --raw)
     # Extract just the hash portion for tagging (e.g., "abc123-nixos-oci-image")
     NIX_HASH=$(basename "$DRV_PATH" | cut -d'-' -f1)
     # The actual qcow2 is inside the output, referenced in hydra-build-products
@@ -18,10 +27,10 @@ data "external" "image_path" {
       IMAGE_PATH=$(cut -d' ' -f3 "$DRV_PATH/nix-support/hydra-build-products")
     else
       # Not built yet - build it now
-      nix build .#packages.aarch64-linux.oci-base-image -o result-oci-image >&2
+      nix build .#packages.$SYSTEM.oci-base-image -o result-oci-image >&2
       IMAGE_PATH=$(cut -d' ' -f3 result-oci-image/nix-support/hydra-build-products)
     fi
-    echo "{\"path\": \"$IMAGE_PATH\", \"nix_hash\": \"$NIX_HASH\"}"
+    echo "{\"path\": \"$IMAGE_PATH\", \"nix_hash\": \"$NIX_HASH\", \"arch\": \"${var.instance_arch}\"}"
   EOF
   ]
   working_dir = "${path.module}/.."
@@ -30,6 +39,7 @@ data "external" "image_path" {
 locals {
   image_path = data.external.image_path.result.path
   nix_hash   = data.external.image_path.result.nix_hash
+  image_arch = data.external.image_path.result.arch
 }
 
 # Check if an OCI image with this nix hash already exists
@@ -40,6 +50,11 @@ data "oci_core_images" "existing_for_hash" {
   filter {
     name   = "freeform_tags.nix_hash"
     values = [local.nix_hash]
+  }
+
+  filter {
+    name   = "freeform_tags.arch"
+    values = [local.image_arch]
   }
 }
 
@@ -58,7 +73,7 @@ resource "oci_objectstorage_bucket" "image_upload" {
   count          = local.need_upload ? 1 : 0
   compartment_id = local.compartment_id
   namespace      = data.oci_objectstorage_namespace.ns.namespace
-  name           = "nixos-oci-image-${local.nix_hash}"
+  name           = "nixos-oci-image-${local.image_arch}-${local.nix_hash}"
   access_type    = "NoPublicAccess"
 }
 
@@ -67,7 +82,7 @@ resource "oci_objectstorage_object" "nixos_image" {
   count        = local.need_upload ? 1 : 0
   namespace    = data.oci_objectstorage_namespace.ns.namespace
   bucket       = oci_objectstorage_bucket.image_upload[0].name
-  object       = "nixos-base-${local.nix_hash}.qcow2"
+  object       = "nixos-base-${local.image_arch}-${local.nix_hash}.qcow2"
   source       = local.image_path
   content_type = "application/octet-stream"
 }
@@ -76,11 +91,12 @@ resource "oci_objectstorage_object" "nixos_image" {
 resource "oci_core_image" "nixos" {
   count          = local.need_upload ? 1 : 0
   compartment_id = local.compartment_id
-  display_name   = "nixos-base-${local.nix_hash}"
+  display_name   = "nixos-base-${local.image_arch}-${local.nix_hash}"
   launch_mode    = "NATIVE"
 
   freeform_tags = {
     nix_hash = local.nix_hash
+    arch     = local.image_arch
   }
 
   image_source_details {
@@ -99,12 +115,12 @@ resource "oci_core_image" "nixos" {
   }
 }
 
-# Add ARM shape compatibility to newly created images
-resource "oci_core_shape_management" "nixos_arm" {
+# Add shape compatibility to newly created images
+resource "oci_core_shape_management" "nixos" {
   count          = local.need_upload ? 1 : 0
   compartment_id = local.compartment_id
   image_id       = oci_core_image.nixos[0].id
-  shape_name     = "VM.Standard.A1.Flex"
+  shape_name     = local.shape_name
 }
 
 # The image ID to use - either existing or newly created
@@ -119,7 +135,7 @@ resource "null_resource" "cleanup_staging" {
 
   depends_on = [
     oci_core_image.nixos,
-    oci_core_shape_management.nixos_arm,
+    oci_core_shape_management.nixos,
   ]
 
   triggers = {

@@ -9,7 +9,12 @@
 # This is a pure hardware module - no application-specific configuration.
 # Use this as a base for any NixOS deployment on OCI ARM.
 
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 {
   config = {
@@ -21,7 +26,7 @@
 
     # Required for iSCSI boot with networkd
     networking.useNetworkd = true;
-    networking.useDHCP = false;  # Required when useNetworkd = true
+    networking.useDHCP = false; # Required when useNetworkd = true
 
     # Enable network in initrd for iSCSI
     boot.initrd.network = {
@@ -35,7 +40,7 @@
     boot.initrd.kernelModules = [
       # iSCSI modules for iBFT boot
       "iscsi_tcp"
-      "iscsi_ibft"      # Auto-configures from iBFT table
+      "iscsi_ibft" # Auto-configures from iBFT table
       "libiscsi"
       "libiscsi_tcp"
       "scsi_transport_iscsi"
