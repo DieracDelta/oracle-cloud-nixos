@@ -1,22 +1,34 @@
-# Build generic NixOS OCI base image
+# Build generic NixOS OCI base images for all required architectures
 #
 # We use nix eval to get the output path instantly without building.
 # The actual build only happens if the path doesn't exist in the store.
-# This makes terraform plan fast even when the image needs rebuilding.
+# This makes terraform plan fast even when images need rebuilding.
 #
 # We tag OCI images with the nix store hash so we can skip upload if
 # an image for this exact derivation already exists in OCI.
 
 locals {
-  # Map instance_arch to nix system and OCI shape
-  nix_system  = var.instance_arch == "arm" ? "aarch64-linux" : "x86_64-linux"
-  shape_name  = var.instance_arch == "arm" ? "VM.Standard.A1.Flex" : "VM.Standard.E2.1.Micro"
-  is_flexible = var.instance_arch == "arm" # Only ARM shape is flexible (configurable OCPU/RAM)
+  # Get unique architectures needed from all instances
+  required_archs = toset([for name, config in var.instances : config.arch])
+
+  # Map arch to nix system
+  arch_to_nix_system = {
+    "arm" = "aarch64-linux"
+    "x86" = "x86_64-linux"
+  }
+
+  # Map arch to OCI shape
+  arch_to_shape = {
+    "arm" = "VM.Standard.A1.Flex"
+    "x86" = "VM.Standard.E2.1.Micro"
+  }
 }
 
 data "external" "image_path" {
+  for_each = local.required_archs
+
   program = ["bash", "-c", <<-EOF
-    SYSTEM="${local.nix_system}"
+    SYSTEM="${local.arch_to_nix_system[each.key]}"
     # Get the derivation's output path without building
     DRV_PATH=$(nix eval .#packages.$SYSTEM.oci-base-image.outPath --raw)
     # Extract just the hash portion for tagging (e.g., "abc123-nixos-oci-image")
@@ -27,83 +39,96 @@ data "external" "image_path" {
       IMAGE_PATH=$(cut -d' ' -f3 "$DRV_PATH/nix-support/hydra-build-products")
     else
       # Not built yet - build it now
-      nix build .#packages.$SYSTEM.oci-base-image -o result-oci-image >&2
-      IMAGE_PATH=$(cut -d' ' -f3 result-oci-image/nix-support/hydra-build-products)
+      nix build .#packages.$SYSTEM.oci-base-image -o result-oci-image-${each.key} >&2
+      IMAGE_PATH=$(cut -d' ' -f3 result-oci-image-${each.key}/nix-support/hydra-build-products)
     fi
-    echo "{\"path\": \"$IMAGE_PATH\", \"nix_hash\": \"$NIX_HASH\", \"arch\": \"${var.instance_arch}\"}"
+    echo "{\"path\": \"$IMAGE_PATH\", \"nix_hash\": \"$NIX_HASH\", \"arch\": \"${each.key}\"}"
   EOF
   ]
   working_dir = "${path.module}/.."
 }
 
 locals {
-  image_path = data.external.image_path.result.path
-  nix_hash   = data.external.image_path.result.nix_hash
-  image_arch = data.external.image_path.result.arch
+  # Map of arch -> image details
+  image_details = {
+    for arch in local.required_archs : arch => {
+      path     = data.external.image_path[arch].result.path
+      nix_hash = data.external.image_path[arch].result.nix_hash
+    }
+  }
 }
 
-# Check if an OCI image with this nix hash already exists
+# Check if an OCI image with this nix hash already exists (per arch)
 data "oci_core_images" "existing_for_hash" {
+  for_each       = local.required_archs
   compartment_id = local.compartment_id
   state          = "AVAILABLE"
 
   filter {
     name   = "freeform_tags.nix_hash"
-    values = [local.nix_hash]
+    values = [local.image_details[each.key].nix_hash]
   }
 
   filter {
     name   = "freeform_tags.arch"
-    values = [local.image_arch]
+    values = [each.key]
   }
 }
 
 locals {
-  # Use existing image if found, otherwise we'll create one
-  existing_image_id = length(data.oci_core_images.existing_for_hash.images) > 0 ? data.oci_core_images.existing_for_hash.images[0].id : null
-  need_upload       = local.existing_image_id == null
+  # Map of arch -> existing image ID (or null)
+  existing_image_ids = {
+    for arch in local.required_archs :
+    arch => length(data.oci_core_images.existing_for_hash[arch].images) > 0 ? data.oci_core_images.existing_for_hash[arch].images[0].id : null
+  }
+
+  # Which archs need upload
+  archs_needing_upload = toset([
+    for arch in local.required_archs : arch
+    if local.existing_image_ids[arch] == null
+  ])
 }
 
 data "oci_objectstorage_namespace" "ns" {
   compartment_id = local.compartment_id
 }
 
-# Object Storage bucket for image upload (only needed if uploading)
+# Object Storage bucket for image upload (only for archs that need it)
 resource "oci_objectstorage_bucket" "image_upload" {
-  count          = local.need_upload ? 1 : 0
+  for_each       = local.archs_needing_upload
   compartment_id = local.compartment_id
   namespace      = data.oci_objectstorage_namespace.ns.namespace
-  name           = "nixos-oci-image-${local.image_arch}-${local.nix_hash}"
+  name           = "nixos-oci-image-${each.key}-${local.image_details[each.key].nix_hash}"
   access_type    = "NoPublicAccess"
 }
 
-# Upload the image to Object Storage (only if no existing image)
+# Upload the image to Object Storage (only for archs that need it)
 resource "oci_objectstorage_object" "nixos_image" {
-  count        = local.need_upload ? 1 : 0
+  for_each     = local.archs_needing_upload
   namespace    = data.oci_objectstorage_namespace.ns.namespace
-  bucket       = oci_objectstorage_bucket.image_upload[0].name
-  object       = "nixos-base-${local.image_arch}-${local.nix_hash}.qcow2"
-  source       = local.image_path
+  bucket       = oci_objectstorage_bucket.image_upload[each.key].name
+  object       = "nixos-base-${each.key}-${local.image_details[each.key].nix_hash}.qcow2"
+  source       = local.image_details[each.key].path
   content_type = "application/octet-stream"
 }
 
-# Create custom image from the uploaded qcow2 (only if no existing image)
+# Create custom image from the uploaded qcow2 (only for archs that need it)
 resource "oci_core_image" "nixos" {
-  count          = local.need_upload ? 1 : 0
+  for_each       = local.archs_needing_upload
   compartment_id = local.compartment_id
-  display_name   = "nixos-base-${local.image_arch}-${local.nix_hash}"
+  display_name   = "nixos-base-${each.key}-${local.image_details[each.key].nix_hash}"
   launch_mode    = "NATIVE"
 
   freeform_tags = {
-    nix_hash = local.nix_hash
-    arch     = local.image_arch
+    nix_hash = local.image_details[each.key].nix_hash
+    arch     = each.key
   }
 
   image_source_details {
     source_type    = "objectStorageTuple"
     namespace_name = data.oci_objectstorage_namespace.ns.namespace
-    bucket_name    = oci_objectstorage_bucket.image_upload[0].name
-    object_name    = oci_objectstorage_object.nixos_image[0].object
+    bucket_name    = oci_objectstorage_bucket.image_upload[each.key].name
+    object_name    = oci_objectstorage_object.nixos_image[each.key].object
 
     operating_system         = "NixOS"
     operating_system_version = "unstable"
@@ -117,21 +142,23 @@ resource "oci_core_image" "nixos" {
 
 # Add shape compatibility to newly created images
 resource "oci_core_shape_management" "nixos" {
-  count          = local.need_upload ? 1 : 0
+  for_each       = local.archs_needing_upload
   compartment_id = local.compartment_id
-  image_id       = oci_core_image.nixos[0].id
-  shape_name     = local.shape_name
+  image_id       = oci_core_image.nixos[each.key].id
+  shape_name     = local.arch_to_shape[each.key]
 }
 
-# The image ID to use - either existing or newly created
+# Final image IDs map: arch -> image_id (existing or newly created)
 locals {
-  image_id = local.existing_image_id != null ? local.existing_image_id : oci_core_image.nixos[0].id
+  image_ids = {
+    for arch in local.required_archs :
+    arch => local.existing_image_ids[arch] != null ? local.existing_image_ids[arch] : oci_core_image.nixos[arch].id
+  }
 }
 
 # Optional: Delete staging bucket/object after image creation to save storage
-# This runs after the image is successfully imported
 resource "null_resource" "cleanup_staging" {
-  count = var.delete_image_after_instance && local.need_upload ? 1 : 0
+  for_each = var.delete_image_after_instance ? local.archs_needing_upload : toset([])
 
   depends_on = [
     oci_core_image.nixos,
@@ -139,14 +166,14 @@ resource "null_resource" "cleanup_staging" {
   ]
 
   triggers = {
-    bucket_name = oci_objectstorage_bucket.image_upload[0].name
+    bucket_name = oci_objectstorage_bucket.image_upload[each.key].name
     namespace   = data.oci_objectstorage_namespace.ns.namespace
-    object_name = oci_objectstorage_object.nixos_image[0].object
+    object_name = oci_objectstorage_object.nixos_image[each.key].object
   }
 
   provisioner "local-exec" {
     command = <<-EOF
-      echo "Cleaning up staging bucket and object to save storage..."
+      echo "Cleaning up staging bucket and object for ${each.key} to save storage..."
 
       # Create temporary OCI config
       OCI_CONFIG=$(mktemp)
@@ -165,18 +192,18 @@ OCICONF
       oci os object delete \
         --config-file "$OCI_CONFIG" \
         --namespace "${data.oci_objectstorage_namespace.ns.namespace}" \
-        --bucket-name "${oci_objectstorage_bucket.image_upload[0].name}" \
-        --object-name "${oci_objectstorage_object.nixos_image[0].object}" \
+        --bucket-name "${oci_objectstorage_bucket.image_upload[each.key].name}" \
+        --object-name "${oci_objectstorage_object.nixos_image[each.key].object}" \
         --force || echo "Warning: Failed to delete object (may already be deleted)"
 
       # Delete the bucket
       oci os bucket delete \
         --config-file "$OCI_CONFIG" \
         --namespace "${data.oci_objectstorage_namespace.ns.namespace}" \
-        --bucket-name "${oci_objectstorage_bucket.image_upload[0].name}" \
+        --bucket-name "${oci_objectstorage_bucket.image_upload[each.key].name}" \
         --force || echo "Warning: Failed to delete bucket (may already be deleted)"
 
-      echo "Staging cleanup complete"
+      echo "Staging cleanup complete for ${each.key}"
     EOF
   }
 }

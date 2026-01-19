@@ -1,0 +1,16 @@
+diff --git a/src/passthrough/mount_fd.rs b/src/passthrough/mount_fd.rs
+index 1234567..abcdefg 100644
+--- a/src/passthrough/mount_fd.rs
++++ b/src/passthrough/mount_fd.rs
+@@ -313,7 +313,10 @@ impl MountFds {
+                 .prefix(format!("Failed to stat mount point \"{mount_point}\""))
+             })?;
+
+-            if stx.mnt_id != mount_id {
++            // Allow mnt_id == 0 (unknown) to pass validation.
++            // statx() may return 0 in sandboxed environments, certain namespace
++            // configurations, or with btrfs subvolumes where mount ID is unavailable.
++            if stx.mnt_id != 0 && stx.mnt_id != mount_id {
+                 return Err(self
+                     .error_for(mount_id, io::Error::from_raw_os_error(libc::EIO))
+                     .set_desc(format!(

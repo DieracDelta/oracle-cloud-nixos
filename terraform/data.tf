@@ -9,7 +9,8 @@ data "oci_identity_availability_domains" "ads" {
   compartment_id = local.compartment_id
 }
 
-# Debug: list compatible shapes for our custom image
+# Debug: list compatible shapes for our custom images
 data "oci_core_image_shapes" "nixos_shapes" {
-  image_id = local.image_id
+  for_each = local.image_ids
+  image_id = each.value
 }

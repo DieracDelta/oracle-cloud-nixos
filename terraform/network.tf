@@ -1,7 +1,7 @@
 # Virtual Cloud Network
 resource "oci_core_vcn" "nixos" {
   compartment_id = local.compartment_id
-  display_name   = "${var.instance_name}-vcn"
+  display_name   = "${var.network_name}-vcn"
   cidr_blocks    = ["10.0.0.0/16"]
   dns_label      = "nixos"
 }
@@ -10,7 +10,7 @@ resource "oci_core_vcn" "nixos" {
 resource "oci_core_internet_gateway" "nixos" {
   compartment_id = local.compartment_id
   vcn_id         = oci_core_vcn.nixos.id
-  display_name   = "${var.instance_name}-igw"
+  display_name   = "${var.network_name}-igw"
   enabled        = true
 }
 
@@ -18,7 +18,7 @@ resource "oci_core_internet_gateway" "nixos" {
 resource "oci_core_route_table" "nixos" {
   compartment_id = local.compartment_id
   vcn_id         = oci_core_vcn.nixos.id
-  display_name   = "${var.instance_name}-rt"
+  display_name   = "${var.network_name}-rt"
 
   route_rules {
     destination       = "0.0.0.0/0"
@@ -31,7 +31,7 @@ resource "oci_core_route_table" "nixos" {
 resource "oci_core_security_list" "nixos" {
   compartment_id = local.compartment_id
   vcn_id         = oci_core_vcn.nixos.id
-  display_name   = "${var.instance_name}-sl"
+  display_name   = "${var.network_name}-sl"
 
   # Egress: allow all outbound
   egress_security_rules {
@@ -78,7 +78,7 @@ resource "oci_core_subnet" "nixos" {
   compartment_id             = local.compartment_id
   vcn_id                     = oci_core_vcn.nixos.id
   availability_domain        = local.availability_domain
-  display_name               = "${var.instance_name}-subnet"
+  display_name               = "${var.network_name}-subnet"
   cidr_block                 = "10.0.1.0/24"
   route_table_id             = oci_core_route_table.nixos.id
   security_list_ids          = [oci_core_security_list.nixos.id]

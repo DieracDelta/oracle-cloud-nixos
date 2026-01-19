@@ -127,6 +127,17 @@ in
         cfg = config.oracle-cloud-nixos;
         pkgs = cfg.pkgs;
 
+        # Overlay to patch virtiofsd for btrfs mount ID compatibility
+        # This fixes "Mount point's mount ID (0) does not match expected value" errors
+        # that occur when building images on systems with btrfs subvolumes
+        virtiofsdOverlay = final: prev: {
+          virtiofsd = prev.virtiofsd.overrideAttrs (oldAttrs: {
+            patches = (oldAttrs.patches or [ ]) ++ [
+              ./patches/virtiofsd-allow-unknown-mount-id.patch
+            ];
+          });
+        };
+
         # Wrapper so terraform always targets the terraform/ directory
         terraformWrapper = pkgs.writeShellScriptBin "terraform" ''
           if [ -z "$FLAKE_ROOT" ]; then
@@ -141,6 +152,20 @@ in
         mkOciImage =
           targetSystem:
           let
+            # Determine if we're cross-compiling
+            isCross = system != targetSystem;
+
+            # Import nixpkgs with virtiofsd overlay for the build system
+            # This ensures make-disk-image uses the patched virtiofsd
+            buildPkgs = import inputs.nixpkgs {
+              system = system;  # Build system (where we run the VM)
+              overlays = [ virtiofsdOverlay ];
+            };
+
+            # Static QEMU user-mode emulator for cross-compilation
+            # This binary will be used inside the build VM via binfmt
+            qemuStatic = buildPkgs.pkgsStatic.qemu-user;
+
             nixos = inputs.nixpkgs.lib.nixosSystem {
               system = targetSystem;
               modules = [
@@ -150,13 +175,31 @@ in
                 # OCI hardware support (iSCSI boot, network drivers)
                 ./modules/oci-hardware.nix
                 (
-                  { lib, pkgs, ... }:
+                  { config, lib, pkgs, ... }:
                   {
                     system.stateVersion = cfg.ociImage.stateVersion;
                     networking.hostName = cfg.ociImage.hostname;
 
                     # Disable documentation to reduce image size
                     documentation.enable = false;
+
+                    # Override OCIImage to use our custom make-disk-image.nix with binfmt support
+                    # This enables cross-compilation by registering binfmt inside the build VM
+                    system.build.OCIImage = lib.mkForce (import ./lib/make-disk-image.nix {
+                      inherit config lib;
+                      pkgs = buildPkgs;  # Use pkgs with patched virtiofsd
+                      inherit (config.virtualisation) diskSize;
+                      name = "oci-image";
+                      baseName = config.image.baseName;
+                      configFile = "${inputs.nixpkgs}/nixos/modules/virtualisation/oci-config-user.nix";
+                      format = "qcow2";
+                      partitionTableType = if config.oci.efi then "efi" else "legacy";
+                      memSize = 16384;  # 16 GB for build VM
+                      copyChannel = false;  # Don't copy nixpkgs channel to image
+                      # Cross-compilation: pass target system and binfmt interpreter
+                      targetSystem = if isCross then targetSystem else null;
+                      binfmtInterpreter = if isCross then qemuStatic else null;
+                    });
 
                     # Enable flakes and nix-command
                     nix.settings.experimental-features = [
@@ -223,6 +266,9 @@ in
             ++ cfg.extraDevShellPackages;
 
           shellHook = ''
+            # Set FLAKE_ROOT for the terraform wrapper
+            export FLAKE_ROOT="$PWD"
+
             # Source .env file if it exists (for TF_VAR_* variables)
             if [ -f .env ]; then
               set -a
