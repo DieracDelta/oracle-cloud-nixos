@@ -69,7 +69,7 @@ variable "instances" {
   description = "Map of instance configurations. Key is instance name."
 
   default = {
-    "nixos-arm" = { arch = "arm", ocpus = 4, memory_gb = 24, boot_volume_gb = 200 }
+    "nixos-arm" = { arch = "arm", ocpus = 4, memory_gb = 24, boot_volume_gb = 100 }
   }
 
   validation {
