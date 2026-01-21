@@ -235,10 +235,10 @@ assert (
   lib.assertMsg (fsType == "ext4" && deterministic -> rootFSUID != null)
     "In deterministic mode with a ext4 partition, rootFSUID must be non-null, by default, it is equal to rootGPUID."
 );
-# We use -E offset=X below, which is only supported by e2fsprogs
+# We use -E offset=X for ext4 (supported by e2fsprogs) or losetup for other filesystems
 assert (
-  lib.assertMsg (partitionTableType != "none" -> fsType == "ext4")
-    "to produce a partition table, we need to use -E offset flag which is support only for fsType = ext4"
+  lib.assertMsg (partitionTableType != "none" -> builtins.elem fsType [ "ext4" "btrfs" ])
+    "partitioned images are only supported for fsType = ext4 or btrfs"
 );
 assert (
   lib.assertMsg
@@ -474,6 +474,7 @@ let
       nix
       systemdMinimal
     ]
+    ++ lib.optional (fsType == "btrfs") btrfs-progs
     ++ lib.optional deterministic gptfdisk
     ++ stdenv.initialPath
   );
@@ -688,11 +689,37 @@ let
           # Get start & length of the root partition in sectors to $START and $SECTORS.
           eval $(partx $diskImage -o START,SECTORS --nr ${rootPartition} --pairs)
 
-          mkfs.${fsType} -b ${blockSize} -F -L ${label} $diskImage -E offset=$(sectorsToBytes $START) $(sectorsToKilobytes $SECTORS)K
+          ${
+            if fsType == "ext4" then
+              ''
+                mkfs.${fsType} -b ${blockSize} -F -L ${label} $diskImage -E offset=$(sectorsToBytes $START) $(sectorsToKilobytes $SECTORS)K
+              ''
+            else
+              ''
+                # For btrfs and other filesystems without -E offset support:
+                # Create a temp file, format it, then dd into the disk image at the partition offset
+                partitionSize=$(sectorsToBytes $SECTORS)
+                partitionOffset=$(sectorsToBytes $START)
+
+                tempPartition=$(mktemp)
+                truncate -s $partitionSize $tempPartition
+                mkfs.${fsType} -L ${label} $tempPartition
+
+                # Write the formatted partition into the disk image at the correct offset
+                dd if=$tempPartition of=$diskImage bs=1M seek=$(( partitionOffset / 1048576 )) conv=notrunc status=progress
+
+                rm $tempPartition
+              ''
+          }
         ''
       else
         ''
-          mkfs.${fsType} -b ${blockSize} -F -L ${label} $diskImage
+          ${
+            if fsType == "ext4" then
+              "mkfs.${fsType} -b ${blockSize} -F -L ${label} $diskImage"
+            else
+              "mkfs.${fsType} -L ${label} $diskImage"
+          }
         ''
     }
 

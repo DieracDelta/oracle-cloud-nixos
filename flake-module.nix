@@ -193,6 +193,7 @@ in
                       baseName = config.image.baseName;
                       configFile = "${inputs.nixpkgs}/nixos/modules/virtualisation/oci-config-user.nix";
                       format = "qcow2";
+                      fsType = "btrfs";  # Use btrfs for future pool expansion
                       partitionTableType = if config.oci.efi then "efi" else "legacy";
                       memSize = 16384;  # 16 GB for build VM
                       copyChannel = false;  # Don't copy nixpkgs channel to image
