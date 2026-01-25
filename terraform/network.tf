@@ -51,6 +51,17 @@ resource "oci_core_security_list" "nixos" {
     }
   }
 
+  # Eternal Terminal
+  ingress_security_rules {
+    protocol  = "6" # TCP
+    source    = "0.0.0.0/0"
+    stateless = false
+    tcp_options {
+      min = 2022
+      max = 2022
+    }
+  }
+
   # ICMP - Destination Unreachable (fragmentation needed)
   ingress_security_rules {
     protocol  = "1" # ICMP

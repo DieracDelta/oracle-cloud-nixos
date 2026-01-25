@@ -109,6 +109,58 @@ in
                 Additional NixOS modules to include in the OCI base image.
               '';
             };
+
+            partitionLayout = mkOption {
+              type = types.enum [ "efi" "efi+lvm" ];
+              default = "efi+lvm";
+              description = ''
+                Partition layout for the disk image.
+                - "efi": Standard EFI layout with ESP + root partition
+                - "efi+lvm": EFI layout with ESP + small root + LVM PV partition
+                  for combining with additional block volumes at runtime
+              '';
+            };
+
+            bootSize = mkOption {
+              type = types.str;
+              default = "512M";
+              description = "Size of the EFI System Partition";
+            };
+
+            rootSize = mkOption {
+              type = types.str;
+              default = "5G";
+              description = ''
+                Size of the root partition (only used with efi+lvm layout).
+                Remaining space is left for LVM PV.
+              '';
+            };
+
+            enableLVM = mkOption {
+              type = types.bool;
+              default = true;
+              description = ''
+                Enable LVM support in the initrd. Automatically enabled
+                when using efi+lvm partition layout.
+              '';
+            };
+
+            initrdSSH = {
+              enable = mkOption {
+                type = types.bool;
+                default = false;
+                description = ''
+                  Enable SSH in initrd for emergency access.
+                  Recommended when using efi+lvm layout.
+                '';
+              };
+
+              authorizedKeys = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                description = "SSH public keys for initrd SSH access";
+              };
+            };
           };
         };
       }
@@ -172,8 +224,10 @@ in
                 # OCI image module from nixpkgs (includes fetch-ssh-keys service)
                 "${inputs.nixpkgs}/nixos/modules/virtualisation/oci-image.nix"
                 "${inputs.nixpkgs}/nixos/modules/virtualisation/oci-options.nix"
-                # OCI hardware support (iSCSI boot, network drivers)
+                # OCI hardware support (iSCSI boot, network drivers, LVM)
                 ./modules/oci-hardware.nix
+                # First-boot LVM setup
+                ./modules/first-boot-lvm.nix
                 (
                   { config, lib, pkgs, ... }:
                   {
@@ -183,18 +237,35 @@ in
                     # Disable documentation to reduce image size
                     documentation.enable = false;
 
+                    # LVM and initrd SSH configuration
+                    oci.hardware = {
+                      enableLVM = cfg.ociImage.enableLVM || cfg.ociImage.partitionLayout == "efi+lvm";
+                      initrdSSH = {
+                        enable = cfg.ociImage.initrdSSH.enable;
+                        authorizedKeys = cfg.ociImage.initrdSSH.authorizedKeys;
+                      };
+                    };
+
+                    # Enable first-boot LVM setup for efi+lvm layout
+                    oci.firstBootLVM.enable = cfg.ociImage.partitionLayout == "efi+lvm";
+
                     # Override OCIImage to use our custom make-disk-image.nix with binfmt support
                     # This enables cross-compilation by registering binfmt inside the build VM
                     system.build.OCIImage = lib.mkForce (import ./lib/make-disk-image.nix {
                       inherit config lib;
                       pkgs = buildPkgs;  # Use pkgs with patched virtiofsd
-                      inherit (config.virtualisation) diskSize;
+                      diskSize = "auto";  # Auto-calculate based on content + reserved space
                       name = "oci-image";
                       baseName = config.image.baseName;
                       configFile = "${inputs.nixpkgs}/nixos/modules/virtualisation/oci-config-user.nix";
                       format = "qcow2";
-                      fsType = "btrfs";  # Use btrfs for future pool expansion
-                      partitionTableType = if config.oci.efi then "efi" else "legacy";
+                      fsType = "ext4";  # ext4 for root; LVM volume uses btrfs for subvolumes
+                      partitionTableType =
+                        if cfg.ociImage.partitionLayout == "efi+lvm" then "efi+lvm"
+                        else if config.oci.efi then "efi"
+                        else "legacy";
+                      bootSize = cfg.ociImage.bootSize;
+                      rootSize = cfg.ociImage.rootSize;
                       memSize = 16384;  # 16 GB for build VM
                       copyChannel = false;  # Don't copy nixpkgs channel to image
                       # Cross-compilation: pass target system and binfmt interpreter

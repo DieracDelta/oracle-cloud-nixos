@@ -127,6 +127,11 @@
   # the end of the partition. Generally it will be 1MiB smaller.
   bootSize ? "256M",
 
+  # size of the root partition, only used if partitionTableType is "efi+lvm"
+  # The remaining space after root will be left as an unformatted partition
+  # for LVM PV setup at runtime.
+  rootSize ? "20G",
+
   # The files and directories to be placed in the target file system.
   # This is a list of attribute sets {source, target, mode, user, group} where
   # `source' is the file system object (regular file or directory) to be
@@ -226,6 +231,7 @@ assert (
     "legacy+boot"
     "legacy+gpt"
     "efi"
+    "efi+lvm"
     "efixbootldr"
     "hybrid"
     "none"
@@ -247,10 +253,11 @@ assert (
       ->
         partitionTableType == "hybrid"
         || partitionTableType == "efi"
+        || partitionTableType == "efi+lvm"
         || partitionTableType == "efixbootldr"
         || partitionTableType == "legacy+gpt"
     )
-    "EFI variables can be used only with a partition table of type: hybrid, efi, efixbootldr, or legacy+gpt."
+    "EFI variables can be used only with a partition table of type: hybrid, efi, efi+lvm, efixbootldr, or legacy+gpt."
 );
 # If only Nix store image, then: contents must be empty, configFile must be unset, and we should no install bootloader.
 assert (
@@ -344,6 +351,7 @@ let
       "legacy+boot" = "2";
       "legacy+gpt" = "2";
       efi = "2";
+      "efi+lvm" = "2";
       efixbootldr = "3";
       hybrid = "3";
     }
@@ -397,6 +405,31 @@ let
           --disk-guid=97FD5997-D90B-4AA3-8D16-C1723AEA73C \
           --partition-guid=1:1C06F03B-704E-4657-B9CD-681A087A2FDC \
           --partition-guid=2:${rootGPUID} \
+          $diskImage
+        ''}
+      '';
+      # EFI + LVM: Creates ESP, root partition, and leaves remaining space for LVM PV
+      # Partition 1: ESP (FAT32, bootable) - 8MiB to bootSize
+      # Partition 2: Root filesystem (btrfs/ext4) - bootSize to bootSize+rootSize
+      # Partition 3: LVM PV (unformatted, remaining space for runtime LVM setup)
+      "efi+lvm" = ''
+        parted --script $diskImage -- \
+          mklabel gpt \
+          mkpart ESP fat32 8MiB $bootSizeMiB \
+          set 1 boot on \
+          align-check optimal 1 \
+          mkpart primary $bootSizeMiB $rootEndMiB \
+          align-check optimal 2 \
+          mkpart primary $rootEndMiB 100% \
+          set 3 lvm on \
+          align-check optimal 3 \
+          print
+        ${lib.optionalString deterministic ''
+          sgdisk \
+          --disk-guid=97FD5997-D90B-4AA3-8D16-C1723AEA73C \
+          --partition-guid=1:1C06F03B-704E-4657-B9CD-681A087A2FDC \
+          --partition-guid=2:${rootGPUID} \
+          --partition-guid=3:A1B2C3D4-E5F6-7890-ABCD-EF1234567890 \
           $diskImage
         ''}
       '';
@@ -603,11 +636,25 @@ let
     bootSize=$(round_to_nearest $(numfmt --from=iec '${bootSize}') $mebibyte)
     bootSizeMiB=$(( bootSize / 1024 / 1024 ))MiB
 
+    # For efi+lvm: calculate root partition end position
+    rootSizeBytes=$(round_to_nearest $(numfmt --from=iec '${rootSize}') $mebibyte)
+    # Root starts after boot, so end = boot position + root size
+    rootEndMiB=$(( (bootSize + rootSizeBytes) / 1024 / 1024 ))MiB
+
     ${
       if diskSize == "auto" then
         ''
           ${
-            if
+            if partitionTableType == "efi+lvm" then
+              ''
+                # Add the GPT at the end
+                gptSpace=$(( 512 * 34 * 1 ))
+                # For efi+lvm: the root partition is a fixed size (not expandable)
+                # so we need to reserve: GPT + bootSize + rootSize (rounded up to MiB alignment)
+                # The LVM partition gets whatever remains
+                reservedSpace=$(( gptSpace + bootSize + rootSizeBytes ))
+              ''
+            else if
               partitionTableType == "efi" || partitionTableType == "efixbootldr" || partitionTableType == "hybrid"
             then
               ''
@@ -804,7 +851,7 @@ let
 
         # Create the ESP and mount it. Unlike e2fsprogs, mkfs.vfat doesn't support an
         # '-E offset=X' option, so we can't do this outside the VM.
-        ${lib.optionalString (partitionTableType == "efi" || partitionTableType == "hybrid") ''
+        ${lib.optionalString (partitionTableType == "efi" || partitionTableType == "efi+lvm" || partitionTableType == "hybrid") ''
           mkdir -p /mnt/boot
           mkfs.vfat -n ESP /dev/vda1
           mount /dev/vda1 /mnt/boot

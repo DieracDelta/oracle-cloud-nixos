@@ -69,7 +69,7 @@ variable "instances" {
   description = "Map of instance configurations. Key is instance name."
 
   default = {
-    "nixos-arm" = { arch = "arm", ocpus = 4, memory_gb = 24, boot_volume_gb = 47 }
+    "nixos-arm" = { arch = "arm", ocpus = 4, memory_gb = 24, boot_volume_gb = 100 }
   }
 
   validation {
@@ -119,12 +119,12 @@ variable "instances" {
     error_message = "x86 instances use fixed 1 OCPU (VM.Standard.E2.1.Micro) - don't set ocpus"
   }
 
-  # OCI minimum boot volume size is 47 GB
+  # OCI minimum boot volume size is 50 GB
   validation {
     condition = alltrue([
-      for name, config in var.instances : config.boot_volume_gb >= 47
+      for name, config in var.instances : config.boot_volume_gb >= 50
     ])
-    error_message = "OCI requires minimum 47 GB boot volume size"
+    error_message = "OCI requires minimum 50 GB boot volume size"
   }
 
   # ARM instances need at least 1 OCPU and 1 GB RAM per OCPU
