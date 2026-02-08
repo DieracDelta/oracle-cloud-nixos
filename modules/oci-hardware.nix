@@ -94,6 +94,15 @@
 
       cp $extraUtils/etc/iscsi/iscsid.conf /etc/iscsi/iscsid.conf
 
+      # Detect stalled iSCSI connections and reconnect instead of hanging forever.
+      # Without this, heavy I/O can wedge the TCP socket and kill the session,
+      # causing -EIO on the root filesystem (sdb) and requiring a reboot.
+      cat >> /etc/iscsi/iscsid.conf <<'ISCSI_TUNE'
+      node.conn[0].timeo.noop_out_interval = 30
+      node.conn[0].timeo.noop_out_timeout = 300
+      node.session.timeo.replacement_timeout = 600
+      ISCSI_TUNE
+
       echo "Starting iSCSI daemon..."
       iscsid --foreground --no-pid-file --debug 8 &
       sleep 2
@@ -123,5 +132,17 @@
       # Kill iscsid - it will be restarted properly in stage 2
       pkill -9 iscsid || true
     '';
+
+    # Run iscsid in stage 2 so NOP-Out pings detect stalled connections
+    # and trigger TCP reconnection instead of hanging forever.
+    services.openiscsi = {
+      enable = true;
+      name = "iqn.2015-02.oracle.boot";
+      extraConfig = ''
+        node.conn[0].timeo.noop_out_interval = 30
+        node.conn[0].timeo.noop_out_timeout = 300
+        node.session.timeo.replacement_timeout = 600
+      '';
+    };
   };
 }
