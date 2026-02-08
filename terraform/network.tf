@@ -82,6 +82,17 @@ resource "oci_core_security_list" "nixos" {
       type = 8
     }
   }
+
+  # WeebTogether Game Server (UDP)
+  ingress_security_rules {
+    protocol  = "17" # UDP
+    source    = "0.0.0.0/0"
+    stateless = false
+    udp_options {
+      min = 7777
+      max = 7777
+    }
+  }
 }
 
 # Subnet

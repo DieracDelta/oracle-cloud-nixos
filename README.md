@@ -175,6 +175,69 @@ This gives you direct console access even before the network is up.
 - Verify network is coming up in initrd
 - The `boot.shell_on_fail` kernel param will drop you to a shell on failure
 
+## LVM Storage Setup
+
+When `enable_block_volume = true` (default), the system uses LVM to combine:
+- Boot volume partition 3 (~95GB)
+- Block volume (100GB)
+
+Into a single ~195GB btrfs volume with subvolumes for `/nix` and `/home`.
+
+### How It Works
+
+1. **First boot**: System boots with `/nix` on the boot volume (~3GB)
+2. **`first-boot-lvm` service**: Creates LVM, btrfs, rsyncs `/nix` to LVM
+3. **Terraform provisioning**: Generates `lvm-mounts.nix` with `fileSystems` declarations
+4. **`nixos-rebuild boot`**: Builds new generation with LVM mount config
+5. **rsync**: Copies new `/nix` to LVM volume
+6. **Reboot**: Initrd mounts `/nix` from LVM, shadowing the boot volume's `/nix`
+
+After this, the boot volume's `/nix` (~3GB) is never used - it's shadowed by the LVM mount.
+
+### Emergency Recovery (Block Volume Unavailable)
+
+If the block volume is damaged or unavailable, you can boot from the boot volume's original `/nix` store. This contains a snapshot of the system from initial provisioning.
+
+**Prerequisites**: Enable initrd SSH in your config:
+```nix
+oci.hardware.initrdSSH = {
+  enable = true;
+  authorizedKeys = [ "ssh-ed25519 AAAA..." ];
+};
+```
+
+**Recovery procedure**:
+
+1. At GRUB menu, press `e` to edit the boot entry
+
+2. Find the `linux` line and append:
+   ```
+   systemd.mask=nix.mount systemd.mask=nix-store.mount
+   ```
+   This tells systemd to skip mounting `/nix` from LVM, using the boot volume's `/nix` instead.
+
+3. Press `Ctrl+X` or `F10` to boot
+
+4. The system boots using the boot volume's original `/nix` store. You can now debug/repair LVM or reconfigure without it.
+
+**Alternative - from initrd shell**:
+
+If already in initrd emergency shell:
+```bash
+# Mount root filesystem
+mkdir -p /mnt-root
+mount /dev/sdb2 /mnt-root
+
+# Mask the LVM mount units so stage-2 doesn't try to mount them
+ln -sf /dev/null /mnt-root/etc/systemd/system/nix.mount
+ln -sf /dev/null /mnt-root/etc/systemd/system/nix-store.mount
+
+# Continue boot with smol boi /nix
+exec switch_root /mnt-root /nix/store/*-nixos-system-*/init
+```
+
+**Note**: The boot volume's `/nix` is a snapshot from initial terraform provisioning. Any `nixos-rebuild` commands run after that only update the LVM volume. The recovery system will be the original configuration, not your current one.
+
 ## Image Management
 
 NixOS images are cached by their nix store hash. This means:
